@@ -1,0 +1,173 @@
+---
+title: "Combining Traditional and New Baseball Statistics"
+author: "Sang Hoo Kook (sk47325)"
+date: "3/17/2022"
+output: html_document
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, fig.align = "center", warning = F, message = F, R.options=list(max.print=100,dplyr.print_max=100))
+```
+
+## Introduction
+
+*Baseball is a sport that utilizes statistics the most. The traditional baseball stats like batting average, home runs, runs batted in, etc. are either counts of results of the plays or ratios produced by such counts. However, a new tracking technology called Statcast was invented a few years ago to measure the quality of the plays instead of the results of the plays. The statistics produced by Statcast measures act as better evaluations of a player's raw abilities than the traditional statistics do since a result of a play is susceptible to outside factors.*
+
+*One dataset that I am using contains traditional statistics of qualified Major League Baseball batters from last six seasons (including 2020's shortened season), and the other dataset contains Statcast statistics of the qualified MLB batters from last five seasons (excluding 2020 season). The traditional statistics dataset contains first name, last name, player id, year, home run, strikeout %, batting average, slugging %, and on base % as variables, while the statcast statistics dataset contains first name, last name, player id, year, barrel rate, and whiff % as variables. These datasets were acquired from the statistics page of MLB's statcast website (https://baseballsavant.mlb.com) by customizing columns. I thought it would be interesting to inspect the relationship between the quality of the player's plays (e.g., how hard the batter hits the ball on average) and the result of the player's plays (e.g., number of home runs). I expect to see a strong positive correlation between the two, that is, the player that produces high quality plays will yield better results with a large enough sample size.*
+
+## Tidying
+
+```{r}
+library(tidyverse)
+
+standard <- read.csv("Standard_Stats.csv")
+statcast <- read.csv("Statcast_Stats.csv")
+
+glimpse(standard)
+glimpse(statcast)
+
+# Name for the last name column is in an odd format - rename the column
+colnames(standard)[1] <- "last_name"
+colnames(statcast)[1] <- "last_name"
+
+# Drop the empty column named "X"
+standard <- select(standard, -"X")
+statcast <- select(statcast, -"X")
+```
+*Some cleaning was needed, but these datasets are tidy. Thus, the pivot functions will be used somewhere else.*
+
+## Joining/Merging
+
+*When joining the two datasets, the key variable that will uniquely define each entry will be a combination of a player_id and a year.*
+```{r}
+# Get the number of observations in each dataset
+nrow(standard)
+nrow(statcast)
+```
+
+*The standard dataset has 816 observations and the statcast dataset has 674 observations. I created this discrepancy by including 2020 data in the standard dataset. However, due to COVID-19, 2020's shortened MLB season had only 60 games when other seasons had 162 games, so statistics from 2020 season should be neglected as they are from a significantly smaller sample. 2020 data will be dropped when I join these two datasets.*
+
+```{r}
+# Find the number of unique IDs by finding the number of unique player_id & year combinations
+standard %>%
+  count(player_id, year) %>%
+  nrow()
+
+statcast %>%
+  count(player_id, year) %>%
+  nrow()
+```
+
+*All IDs are unique in both datasets. Therefore, there are 816 unique IDs in the standard dataset and there are 674 unique IDs in the statcast dataset.*
+
+*Then, because I know that the only difference between the sizes of these two datasets are extra 142 data from 2020 season in the standard dataset, the number of IDs that appear only in one dataset (standard dataset) is 142, and the number of IDs in common is 674.*
+
+```{r}
+# Before joining, I will drop columns first_name and last_name in the Statcast dataset since these columns also appear in the standard dataset
+statcast <- statcast %>%
+  select(-c("last_name", "first_name"))
+
+# Use inner_join by both player_id and year to merge these two datasets into a dataset called stats
+stats <- standard %>%
+  inner_join(statcast, by = c("player_id", "year"))
+
+nrow(stats)
+```
+
+*As expected, 142 observations were dropped from the standard dataset while all 674 observations from the statcast dataset were kept.*
+
+## Wrangling
+
+### Wrangling 1
+
+*OPS (on-base plus slugging) is a statistic that calculates a general productivity of a batter by adding their on-base percentage and slugging percentage. The higher the OPS, the more the batter gives a chance for their team to score.*
+
+```{r}
+library(knitr)
+
+# Our dataset already has on-base percentage and slugging percentage - use mutate to add a new column for ops
+stats <- stats %>%
+  mutate(ops = on_base_percent + slg_percent)
+
+# Find players that recorded the highest ops in 2018 and 2019 seasons
+ops_stats <- stats %>%
+  filter(year == 2018 | year == 2019) %>%
+  select(first_name, last_name, year, ops) %>%
+  arrange(desc(ops))
+
+kable(ops_stats %>%
+        head(), "simple")
+```
+
+*This table lists top six single season OPS from 2018 and 2019 seasons. However, it would be nice to see the OPS from both years for the players with top single season OPS.*
+
+```{r}
+# Use pivot_wider() to look at players' ops from both years in one row, and unite the name as well
+kable(ops_stats %>%
+  pivot_wider(names_from = year, values_from = ops) %>%
+  unite(name, first_name, last_name, sep = " ") %>%
+  head(), "simple")
+```
+
+*We can see that Christian Yelich had the highest single season OPS out of the two seasons, but Mike Trout had the best overall OPS over the two seasons.*
+
+### Wrangling 2
+
+*Whiff rate in baseball represents the percentage of "swing and miss" out of all of the swings that a batter takes. Naturally, the more the batter swings and misses (i.e., higher whiff rate), the more likely that the batter is going to strikeout.*
+
+```{r}
+# Find the average of whiff rate and strikeout rate by year (note that this won't be the actual yearly average of these values since we are not using the raw count data used to calculate these rates)
+kable(stats %>%
+  group_by(year) %>%
+  summarize(mean_whiff = mean(whiff_percent, na.rm = T),
+            mean_k_rate = mean(b_k_percent, na.rm = T)), "simple")
+```
+
+*It is apparent that both the whiff rate and the strikeout rate have been increasing over the years. Some baseball experts/fans believe that this is one of the reason that baseball is considered boring these days since more strikeout means less action on the field.*
+
+### Wrangling 3
+
+```{r}
+# Find the most common last name among these qualified batters (note that one player can increase their last name's count by 5, at most, since each year is unique)
+kable(stats %>%
+  group_by(last_name) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count)) %>%
+  head(), "simple")
+```
+
+*Cabrera was the most common last name from the set of qualified batters for the last 5 seasons and is followed by Hernandez and Santana.*
+
+## Visualizations
+
+*Barrel in baseball statistics means a batted ball that travels at the most ideal exit velocity and launch angle. Simply put, it is a batted ball that has a very high chance of becoming a hit or a home run. Barrel rate represents the rate of barrels out of all the batted balls from a batter. Naturally, it is expected that a batter with a higher barrel rate will produce more home runs.*
+
+```{r}
+# Plot each batter's number of home runs against their barrel rate from single season and add a regression line to see the trend
+stats %>%
+  ggplot(aes(x = barrel_batted_rate, y = b_home_run)) +
+  geom_point() +
+  geom_smooth() +
+  labs(title = "Relationship Between Barrel Rate and Home Run", x = "Barrel Rate (%)", y = "Home Run") +
+  ylim(c(0, 60)) +
+  theme(plot.background = element_rect(fill = "grey"),
+    panel.background = element_rect(fill = "white"),
+    plot.title = element_text(size = 20),
+    axis.text = element_text(color = "black"))
+```
+
+*The plot shows the relationship between the barrel rate and the number of home runs with its points and regression line. As expected, there is a very strong correlation between the barrel rate and the number of home runs from a batter.*
+
+```{r}
+# Use stat function to display the mean whiff rates over the last five seasons
+stats %>%
+  ggplot(aes(x = year, y = whiff_percent)) +
+  geom_point(stat = "summary", fun = mean) +
+  geom_errorbar(stat = "summary", fun.data = "mean_se", width = 0.5) +
+  labs(title = "Mean Whiff Rate Over the Years", x = "Year", y = "Whiff Rate (%)") +
+  xlim(c(2015, 2022)) +
+  theme(plot.background = element_rect(fill = "skyblue"),
+        plot.title = element_text(size = 20))
+```
+
+*This plot is showing the mean whiff rate over the last five seasons with error bars. We can safely conclude that the whiff rate has been increasing over the years since 2018's whiff rate is statistically distinct from that of 2016 and 2021's whiff rate is statistically distinct from that of 2018.*
